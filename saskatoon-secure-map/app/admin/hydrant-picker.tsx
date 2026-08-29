@@ -154,12 +154,12 @@ export default function HydrantPicker() {
 
       <div>
         <label htmlFor="hydrantAddress">Address / location name</label>
-        <input id="hydrantAddress" name="address" placeholder="Example: 123 Main St or beside alley" maxLength={160} />
+        <input id="hydrantAddress" name="address" placeholder="" maxLength={160} />
       </div>
 
       <div>
         <label htmlFor="hydrantNote">Note (optional)</label>
-        <input id="hydrantNote" name="note" placeholder="Example: New hydrant not shown by City data" maxLength={300} />
+        <input id="hydrantNote" name="note" placeholder="" maxLength={300} />
       </div>
     </>
   )
