@@ -99,7 +99,7 @@ export default async function AdminPage({
               id="sortOrder"
               name="sortOrder"
               type="number"
-              defaultValue="100"
+              defaultValue="1"
             />
             <div className="muted">
               Smaller numbers appear first in the route list.
