@@ -89,7 +89,7 @@ export default async function AdminPage({
             <input
               id="routeName"
               name="routeName"
-              placeholder="Example: Romio 2 Caswell Hill"
+              placeholder="Charlie 1"
             />
           </div>
 
