@@ -184,7 +184,7 @@ export async function uploadRoute(formData: FormData) {
       {
         name: routeName,
         points,
-        sort_order: Number.isFinite(sortOrder) ? sortOrder : 0,
+        sort_order: Number.isFinite(sortOrder) ? sortOrder : 100,
         uploaded_by: user.id,
         updated_at: new Date().toISOString(),
       },
