@@ -1,3 +1,0 @@
-import { createClient } from '@/lib/supabase/server'
-export async function requireApproved(){const supabase=await createClient();const {data:{user}}=await supabase.auth.getUser();if(!user)return {ok:false as const,status:401 as const};const {data:profile}=await supabase.from('profiles').select('status,role').eq('id',user.id).single();if(!profile||profile.status!=='approved')return {ok:false as const,status:403 as const};return {ok:true as const,user,profile,supabase}}
-export async function requireAdmin(){const r=await requireApproved();if(!r.ok)return r;if(r.profile.role!=='admin')return {ok:false as const,status:403 as const};return r}
