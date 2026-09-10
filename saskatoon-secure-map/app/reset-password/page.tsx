@@ -1,0 +1,2 @@
+import { resetPassword } from '@/app/actions'
+export default async function Reset({searchParams}:{searchParams:Promise<Record<string,string|undefined>>}){const q=await searchParams;return <main className="page"><section className="card"><h1>Choose new password</h1>{q.error&&<div className="error">{q.error}</div>}<form action={resetPassword}><input name="password" type="password" placeholder="New password" minLength={6} required/><button>Update password</button></form></section></main>}

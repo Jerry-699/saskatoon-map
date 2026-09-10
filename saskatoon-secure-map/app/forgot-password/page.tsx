@@ -1,0 +1,2 @@
+import { forgotPassword } from '@/app/actions'
+export default async function Forgot({searchParams}:{searchParams:Promise<Record<string,string|undefined>>}){const q=await searchParams;return <main className="page"><section className="card"><h1>Reset password</h1>{q.error&&<div className="error">{q.error}</div>}{q.message&&<div className="ok">{q.message}</div>}<form action={forgotPassword}><input name="email" type="email" placeholder="Email" required/><button>Send reset email</button></form><p><a href="/login">Back to sign in</a></p></section></main>}
