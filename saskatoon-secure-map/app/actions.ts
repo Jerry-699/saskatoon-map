@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 function go(path:string,message:string):never{redirect(`${path}?message=${encodeURIComponent(message)}`)}
 export async function login(formData:FormData){const email=String(formData.get('email')||'').trim().toLowerCase();const password=String(formData.get('password')||'');if(!email||!password)go('/login','Enter your email and password.');const supabase=await createClient();const {error}=await supabase.auth.signInWithPassword({email,password});if(error)go('/login',error.message);redirect('/')}
-export async function signup(formData:FormData){const fullName=String(formData.get('fullName')||'').trim();const email=String(formData.get('email')||'').trim().toLowerCase();const password=String(formData.get('password')||'');if(!fullName||!email||!password)go('/signup','Fill in every field.');if(password.length<5)go('/signup','Use a password with at least 5 characters.');const supabase=await createClient();const h=await headers();const origin=h.get('origin')||process.env.NEXT_PUBLIC_SITE_URL||'http://localhost:3000';const {data,error}=await supabase.auth.signUp({email,password,options:{data:{full_name:fullName},emailRedirectTo:`${origin}/auth/callback`}});if(error)go('/signup',error.message);if(!data.session)redirect('/check-email');redirect('/pending')}
+export async function signup(formData:FormData){const fullName=String(formData.get('fullName')||'').trim();const email=String(formData.get('email')||'').trim().toLowerCase();const password=String(formData.get('password')||'');if(!fullName||!email||!password)go('/signup','Fill in every field.');if(password.length<6)go('/signup','Use a password with at least 6 characters.');const supabase=await createClient();const h=await headers();const origin=h.get('origin')||process.env.NEXT_PUBLIC_SITE_URL||'http://localhost:3000';const {data,error}=await supabase.auth.signUp({email,password,options:{data:{full_name:fullName},emailRedirectTo:`${origin}/auth/callback`}});if(error)go('/signup',error.message);if(!data.session)redirect('/check-email');redirect('/pending')}
 
 
 export async function requestPasswordReset(formData: FormData) {
@@ -27,7 +27,7 @@ export async function updatePassword(formData: FormData) {
   const confirmPassword = String(formData.get('confirmPassword') || '')
 
   if (!password || !confirmPassword) go('/update-password', 'Enter the new password twice.')
-  if (password.length < 5) go('/update-password', 'Use a password with at least 5 characters.')
+  if (password.length < 6) go('/update-password', 'Use a password with at least 6 characters.')
   if (password !== confirmPassword) go('/update-password', 'The passwords do not match.')
 
   const supabase = await createClient()
