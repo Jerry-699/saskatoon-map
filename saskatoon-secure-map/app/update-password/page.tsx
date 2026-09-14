@@ -8,7 +8,7 @@ export default async function UpdatePasswordPage({searchParams}:{searchParams:Pr
     <p className="muted">Choose a new password for your account.</p>
     {p.message ? <div className="message">{p.message}</div> : null}
     <form action={updatePassword}>
-      <div><label htmlFor="password">New password</label><input id="password" name="password" type="password" autoComplete="new-password" minLength={10} required /></div>
+      <div><label htmlFor="password">New password</label><input id="password" name="password" type="password" autoComplete="new-password" minLength={5} required /></div>
       <div><label htmlFor="confirmPassword">Confirm new password</label><input id="confirmPassword" name="confirmPassword" type="password" autoComplete="new-password" minLength={10} required /></div>
       <button type="submit">Save new password</button>
     </form>
