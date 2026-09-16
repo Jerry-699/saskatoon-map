@@ -260,6 +260,7 @@
       font-size: 13px;
       font-weight: 700;
       line-height: 1.45;
+      white-space: pre-line;
     }
 
     body.dark #toolbar {
@@ -752,8 +753,7 @@ let lastDriveMapUpdate = 0;
 let hydrantsOn = false;
 let hydrantLoadGeneration = 0;
 let blockCache = new Map();
-let hydrantReloadTimer = null;
-let driveHydrantReloadTime = 0;
+let hydrantEventsBound = false;
 
 let routeStartMarker = null;
 let routeFinishMarker = null;
@@ -782,6 +782,7 @@ let wakeLock = null;
 let recordingSuspendedByVisibility = false;
 let lastVisibleGpsCallbackAt = 0;
 let activeDriveRouteSelectorValue = "";
+let allowPageExit = false;
 
 
 
@@ -790,13 +791,28 @@ let activeDriveRouteSelectorValue = "";
 ========================= */
 
 async function requestScreenWakeLock() {
-  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  if (!followMode || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
   try {
     if (wakeLock && !wakeLock.released) return;
     wakeLock = await navigator.wakeLock.request("screen");
     wakeLock.addEventListener("release", () => { wakeLock = null; });
   } catch (error) {
     console.warn("Screen wake lock unavailable:", error);
+  }
+}
+
+async function releaseScreenWakeLock() {
+  if (!wakeLock || wakeLock.released) {
+    wakeLock = null;
+    return;
+  }
+
+  const lockToRelease = wakeLock;
+  wakeLock = null;
+  try {
+    await lockToRelease.release();
+  } catch (error) {
+    console.warn("Could not release screen wake lock:", error);
   }
 }
 
@@ -1026,11 +1042,13 @@ async function saveDraftToServer(payload) {
   };
 
   const previous = draftServerSaveInFlight || Promise.resolve();
-  draftServerSaveInFlight = previous.catch(() => {}).then(run);
+  const queuedSave = previous.catch(() => {}).then(run);
+  draftServerSaveInFlight = queuedSave;
   try {
-    return await draftServerSaveInFlight;
+    return await queuedSave;
   } finally {
-    if (draftServerSaveInFlight) draftServerSaveInFlight = null;
+    /* Do not clear a newer save that was queued while this one was running. */
+    if (draftServerSaveInFlight === queuedSave) draftServerSaveInFlight = null;
   }
 }
 
@@ -1069,6 +1087,11 @@ async function clearDriveDraft() {
   clearTimeout(draftServerTimer);
   draftServerTimer = null;
   try { localStorage.removeItem(DRIVE_DRAFT_LOCAL_KEY); } catch {}
+  /* Let any already-started save finish before deleting, so a late PUT cannot
+     recreate a draft after the user saved or discarded it. */
+  if (draftServerSaveInFlight) {
+    try { await draftServerSaveInFlight; } catch {}
+  }
   try {
     await fetch("/api/drive-draft", { method: "DELETE", credentials: "same-origin", keepalive: true });
   } catch {}
@@ -1155,11 +1178,11 @@ function resumeRecoveredRecording(draft) {
 
 async function restoreDriveDraftIfAny() {
   const draft = await fetchDriveDraft();
-  if (!draft || draftPointCount(draft.segments) < 1) return;
+  if (!draft || draftPointCount(draft.segments) < 1) return false;
   if (draft.state === "completed") {
-    showRecoveredCompletedDraft(draft);
+    return showRecoveredCompletedDraft(draft);
   } else {
-    resumeRecoveredRecording(draft);
+    return resumeRecoveredRecording(draft);
   }
 }
 
@@ -1177,6 +1200,7 @@ if (signOutLink) {
       saveDraftLocally(payload);
       await saveDraftToServer(payload);
     }
+    allowPageExit = true;
     window.location.href = "/logout";
   });
 }
@@ -1186,12 +1210,31 @@ window.addEventListener("pagehide", () => {
   else if (lastCompletedDriveSegments.length) persistDriveDraft("completed", true);
 });
 
+window.addEventListener("beforeunload", event => {
+  if (allowPageExit) return;
+  const hasUnsavedRoute = followMode ||
+    (draftState === "completed" && draftPointCount(lastCompletedDriveSegments) >= 2);
+  if (!hasUnsavedRoute) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
 /* =========================
    BASIC HELPERS
 ========================= */
 
 function status(text) {
-  document.getElementById("status").innerHTML = text;
+  const node = document.getElementById("status");
+  node.textContent = String(text ?? "").replace(/<br\s*\/?\s*>/gi, "\n");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 
@@ -1469,10 +1512,13 @@ async function showBlock(lat, lng) {
 
   const box = document.createElement("div");
   box.className = "address-marker";
-  box.innerHTML =
-    (info.house ? `${info.house}<br>` : "") +
-    blockText +
-    "<br><small>Tap to close</small>";
+  if (info.house) {
+    box.append(document.createTextNode(String(info.house)), document.createElement("br"));
+  }
+  box.append(document.createTextNode(blockText), document.createElement("br"));
+  const closeHint = document.createElement("small");
+  closeHint.textContent = "Tap to close";
+  box.append(closeHint);
 
   addressMarker =
     new maplibregl.Marker({
@@ -1778,6 +1824,7 @@ function getAccurateGPS() {
         }
       },
       () => {
+        navigator.geolocation.clearWatch(watcher);
         status("Please allow precise location.");
       },
       {
@@ -2134,19 +2181,11 @@ function startDriveWatcher() {
             Math.max(0, speed * 3.6);
         }
 
-        document.getElementById("driveInfo").innerHTML =
+        document.getElementById("driveInfo").textContent =
           (speedKmh == null
             ? ""
             : `${speedKmh.toFixed(0)} km/h • `) +
           `GPS ±${Math.round(accuracy)} m`;
-
-        if (
-          hydrantsOn &&
-          now - driveHydrantReloadTime > 20000
-        ) {
-          driveHydrantReloadTime = now;
-          loadHydrants();
-        }
 
         lastGps = currentPoint;
       },
@@ -2176,6 +2215,7 @@ function stopDrive() {
 
   followMode = false;
   driveModeType = null;
+  releaseScreenWakeLock();
   hideFloatingDriveControls();
   recordingSuspendedByVisibility = false;
   lastVisibleGpsCallbackAt = 0;
@@ -2314,14 +2354,18 @@ function setLine(
   width = 7,
   dash = null
 ) {
-  if (points.length < 2) return;
+  const usablePoints = (Array.isArray(points) ? points : [])
+    .map(point => ({ lat: Number(point?.lat), lng: Number(point?.lng) }))
+    .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+
+  if (usablePoints.length < 2) return;
 
   const data = {
     type: "Feature",
     geometry: {
       type: "LineString",
       coordinates:
-        points.map(point => [
+        usablePoints.map(point => [
           point.lng,
           point.lat
         ])
@@ -2379,7 +2423,10 @@ function setMultiLine(
   width = 4.8
 ) {
   const usableSegments =
-    segments
+    (Array.isArray(segments) ? segments : [])
+      .map(segment => (Array.isArray(segment) ? segment : [])
+        .map(point => ({ lat: Number(point?.lat), lng: Number(point?.lng) }))
+        .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng)))
       .filter(segment => segment.length >= 2)
       .map(segment =>
         segment.map(point => [
@@ -2401,14 +2448,14 @@ function setMultiLine(
   };
 
   if (map.getSource(id)) {
-  map.getSource(id).setData(data);
+    map.getSource(id).setData(data);
 
-  if (id === "liveDriveTrace" && map.getLayer(id)) {
-    map.moveLayer(id);
+    if (id === "liveDriveTrace" && map.getLayer(id)) {
+      map.moveLayer(id);
+    }
+
+    return;
   }
-
-  return;
-}
 
   map.addSource(id, {
     type: "geojson",
@@ -2429,6 +2476,16 @@ function setMultiLine(
       "line-opacity": opacity
     }
   });
+
+  if (id === "liveDriveTrace" && map.getLayer(id)) {
+    map.moveLayer(id);
+  }
+}
+
+function keepLiveDriveTraceOnTop() {
+  if (map.getLayer("liveDriveTrace")) {
+    map.moveLayer("liveDriveTrace");
+  }
 }
 
 /* =========================
@@ -2459,10 +2516,11 @@ function showRouteEndpointMarkers(route) {
 
 function getRoutes() {
   try {
-    return JSON.parse(
+    const routes = JSON.parse(
       localStorage.getItem("faranRoutes") ||
       "[]"
     );
+    return Array.isArray(routes) ? routes : [];
   } catch {
     return [];
   }
@@ -2531,9 +2589,9 @@ function clearSelectedRouteLines() {
   clearRouteEndpointMarkers();
 }
 
-function showSelectedRoutes(routes, fit = true) {
+function showSelectedRoutes(routes, fit = true, announce = true) {
   clearSelectedRouteLines();
-  selectedRoutes = (routes || []).filter(Boolean);
+  selectedRoutes = (Array.isArray(routes) ? routes : []).filter(Boolean);
   selectedRoute = selectedRoutes[0] || null;
 
   selectedRoutes.forEach((route, index) => {
@@ -2549,25 +2607,29 @@ function showSelectedRoutes(routes, fit = true) {
       null
     );
   });
-  
-if (map.getLayer("liveDriveTrace")) {
-  map.moveLayer("liveDriveTrace");
-}
-  
+
+  /* Red reference routes can be recreated at any time. Always move the live
+     blue recording back above them. */
+  keepLiveDriveTraceOnTop();
+
   if (!selectedRoutes.length) {
-    if (!followMode) status("Routes hidden.");
+    if (announce && !followMode) status("Routes hidden.");
     return;
   }
 
   if (fit && !followMode) {
     const bounds = new maplibregl.LngLatBounds();
-    selectedRoutes.forEach(route => (route.points || []).forEach(point => bounds.extend([point.lng, point.lat])));
+    selectedRoutes.forEach(route => (Array.isArray(route.points) ? route.points : []).forEach(point => {
+      const lng = Number(point?.lng);
+      const lat = Number(point?.lat);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) bounds.extend([lng, lat]);
+    }));
     if (!bounds.isEmpty()) {
       map.fitBounds(bounds, { padding: 55, maxZoom: 17 });
     }
   }
 
-  if (!followMode) {
+  if (announce && !followMode) {
     status(selectedRoutes.length === 1
       ? `Route "${selectedRoutes[0].name}" showing.`
       : `${selectedRoutes.length} routes showing.`);
@@ -2621,7 +2683,15 @@ function refreshRoutes() {
 
   const routes = getSelectedRouteValues().map(getSelectedRouteByValue).filter(Boolean);
   document.getElementById("routePickerSummary").textContent = `🛣️ Select routes (${routes.length})`;
-  if (routes.length) showSelectedRoutes(routes, false);
+  showSelectedRoutes(routes, false, false);
+
+  const routeControls = document.getElementById("routeDriveControls");
+  routeControls.style.display = routes.length ? "flex" : "none";
+
+  const single = routes.length === 1 ? routes[0] : null;
+  const deletePrivateBtn = document.getElementById("deletePrivateDriveBtn");
+  deletePrivateBtn.style.display = single?.privateDriveId ? "block" : "none";
+  deletePrivateBtn.dataset.routeId = single?.privateDriveId || "";
 }
 
 function getSelectedRouteByValue(value) {
@@ -2679,7 +2749,7 @@ async function loadBackendRoutes() {
       await response.json();
 
     BACKEND_ROUTES =
-      (data.routes || []).map(route => ({
+      (Array.isArray(data.routes) ? data.routes : []).map(route => ({
         id: `db-${route.id}`,
         dbId: route.id,
         name: route.name,
@@ -2781,7 +2851,7 @@ async function loadPrivateDrives() {
     });
     if (!response.ok) return;
     const data = await response.json();
-    PRIVATE_DRIVES = data.routes || [];
+    PRIVATE_DRIVES = Array.isArray(data.routes) ? data.routes : [];
     refreshRoutes();
   } catch (error) {
     console.warn('Could not load private drives:', error);
@@ -2944,7 +3014,7 @@ async function loadHydrants() {
       throw new Error(data.error);
     }
 
-    const features = data.features || [];
+    const features = Array.isArray(data.features) ? data.features : [];
     const counts = data.counts || {};
 
     if (map.getSource("hydrants")) {
@@ -2995,7 +3065,10 @@ async function loadHydrants() {
         }
       });
 
-      map.on("click", "hydrant-points", event => {
+      if (!hydrantEventsBound) {
+        hydrantEventsBound = true;
+
+        map.on("click", "hydrant-points", event => {
         event.originalEvent.stopPropagation();
 
         const feature = event.features?.[0];
@@ -3034,8 +3107,12 @@ async function loadHydrants() {
           p._manual === 1 ||
           p._manual === "1";
 
-        const addressValue = p.ADDRESS || "";
-        const noteValue = p.NOTE || "";
+        const addressValue = escapeHtml(p.ADDRESS || "");
+        const noteValue = escapeHtml(p.NOTE || "");
+        const safeNode = escapeHtml(node);
+        const safeStatus = escapeHtml(statusValue);
+        const safeType = escapeHtml(typeValue);
+        const safeYear = escapeHtml(yearValue);
 
         const extraManualInfo = isManual
           ? `<strong style="color:#b26a00">Admin-added hydrant</strong><br>` +
@@ -3052,10 +3129,10 @@ async function loadHydrants() {
         .setHTML(
           `<strong>🔥 Fire Hydrant</strong><br><br>` +
           extraManualInfo +
-          (isManual ? "" : `Node #: ${node}<br>`) +
-          `Status: ${statusValue}<br>` +
-          `Type: ${typeValue}<br>` +
-          (isManual ? "" : `Year: ${yearValue}<br>`) +
+          (isManual ? "" : `Node #: ${safeNode}<br>`) +
+          `Status: ${safeStatus}<br>` +
+          `Type: ${safeType}<br>` +
+          (isManual ? "" : `Year: ${safeYear}<br>`) +
           `<br><a href="${REPORT_HYDRANT_URL}" target="_blank" rel="noopener">Report Hydrant Issue</a>`
         )
         .addTo(map);
@@ -3068,6 +3145,7 @@ async function loadHydrants() {
       map.on("mouseleave", "hydrant-points", () => {
         map.getCanvas().style.cursor = "";
       });
+      }
     }
 
     const cityCount = Number(counts.city ?? 0);
@@ -3090,13 +3168,13 @@ async function loadHydrants() {
 }
 
 /* The whole City layer is loaded at once, so moving the map no longer needs
-   a new hydrant query. Refresh quietly every 5 seconds while hydrants are ON. The API verifies the
+   a new hydrant query. Refresh quietly every 15 minutes while hydrants are ON. The API verifies the
    complete OBJECTID list before returning data, so missing batches are not silently accepted. */
 setInterval(() => {
   if (hydrantsOn) {
     loadHydrants();
   }
-}, 5 * 1000);
+}, 15 * 60 * 1000);
 
 /* =========================
    STARTUP
@@ -3106,14 +3184,15 @@ map.on("load", async () => {
   refreshRoutes();
   await Promise.all([loadBackendRoutes(), loadPrivateDrives()]);
   updateCompass();
-  requestScreenWakeLock();
-  await restoreDriveDraftIfAny();
+  const restoredDraft = await restoreDriveDraftIfAny();
 
   /*
     Do not move to the user's location automatically.
     Use the floating ◎ button, GPS button, or Drive when wanted.
   */
-  status("Map ready. Tap ◎ or GPS when you want to show your location.");
+  if (!restoredDraft) {
+    status("Map ready. Tap ◎ or GPS when you want to show your location.");
+  }
 });
 setInterval(
   loadBackendRoutes,
