@@ -91,7 +91,7 @@ export default async function AdminPage({
             <input
               id="routeName"
               name="routeName"
-              placeholder=""
+              placeholder="Example: Romio 2 Caswell Hill"
             />
           </div>
 
@@ -101,7 +101,7 @@ export default async function AdminPage({
               id="sortOrder"
               name="sortOrder"
               type="number"
-              defaultValue="1"
+              defaultValue="100"
             />
             <div className="muted">
               Smaller numbers appear first in the route list.
@@ -156,24 +156,38 @@ export default async function AdminPage({
           <button type="submit">🔥 Add selected hydrant(s)</button>
         </form>
 
-        <h2 style={{ marginTop: 28 }}>Manually added hydrants</h2>
-        {(manualHydrants || []).length === 0 ? (
-          <p className="muted">No manually added hydrants yet.</p>
-        ) : (
-          (manualHydrants || []).map((hydrant) => (
-            <div className="user" key={hydrant.id}>
-              <strong>{hydrant.address || 'Manual fire hydrant'}</strong>
-              <div className="muted">
-                {Number(hydrant.latitude).toFixed(6)}, {Number(hydrant.longitude).toFixed(6)}
-              </div>
-              {hydrant.note ? <div className="muted" style={{ marginTop: 4 }}>{hydrant.note}</div> : null}
-              <form action={deleteHydrant} style={{ marginTop: 8 }}>
-                <input type="hidden" name="hydrantId" value={hydrant.id} />
-                <button className="danger" type="submit">Delete hydrant</button>
-              </form>
-            </div>
-          ))
-        )}
+        <details style={{ marginTop: 28 }}>
+          <summary
+            style={{
+              display: 'list-item',
+              cursor: 'pointer',
+              fontSize: '1.25rem',
+              fontWeight: 700,
+              padding: '12px 0',
+            }}
+          >
+            Manually added hydrants ({(manualHydrants || []).length})
+          </summary>
+          <div style={{ paddingTop: 8 }}>
+            {(manualHydrants || []).length === 0 ? (
+              <p className="muted">No manually added hydrants yet.</p>
+            ) : (
+              (manualHydrants || []).map((hydrant) => (
+                <div className="user" key={hydrant.id}>
+                  <strong>{hydrant.address || 'Manual fire hydrant'}</strong>
+                  <div className="muted">
+                    {Number(hydrant.latitude).toFixed(6)}, {Number(hydrant.longitude).toFixed(6)}
+                  </div>
+                  {hydrant.note ? <div className="muted" style={{ marginTop: 4 }}>{hydrant.note}</div> : null}
+                  <form action={deleteHydrant} style={{ marginTop: 8 }}>
+                    <input type="hidden" name="hydrantId" value={hydrant.id} />
+                    <button className="danger" type="submit">Delete hydrant</button>
+                  </form>
+                </div>
+              ))
+            )}
+          </div>
+        </details>
 
         <hr style={{ border: 0, borderTop: '1px solid #e6e9ed', margin: '28px 0' }} />
 
