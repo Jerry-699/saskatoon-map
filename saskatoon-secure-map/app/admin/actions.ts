@@ -9,100 +9,90 @@ async function requireAdminWithUser() {
 
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser()
 
-  if (!user) {
+  if (authError || !user) {
     redirect('/login')
   }
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('is_admin')
+    .select('is_admin,blocked')
     .eq('id', user.id)
     .single()
 
-  if (!profile?.is_admin) {
+  if (profileError || !profile?.is_admin || profile.blocked) {
     redirect('/pending')
   }
 
   return { supabase, user }
 }
 
-async function requireAdmin() {
-  const { supabase } = await requireAdminWithUser()
-  return supabase
+function adminMessage(message: string): never {
+  redirect('/admin?message=' + encodeURIComponent(message))
+}
+
+function textField(formData: FormData, name: string): string {
+  const value = formData.get(name)
+  if (value === null) return ''
+  if (typeof value !== 'string') adminMessage('Invalid form field: ' + name)
+  return value.trim()
+}
+
+function requiredId(formData: FormData, name: string): string {
+  const id = textField(formData, name)
+  if (!id || id.length > 128) adminMessage('Missing or invalid record ID. Refresh the page and try again.')
+  return id
+}
+
+function coordinate(value: unknown): number {
+  if (typeof value === 'number') return value
+  if (typeof value !== 'string' || !value.trim()) return NaN
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())) return NaN
+  return Number(value)
+}
+
+async function updateUserAccess(
+  formData: FormData,
+  changes: { approved: boolean; blocked?: boolean },
+  message: string
+) {
+  const { supabase, user } = await requireAdminWithUser()
+  const id = requiredId(formData, 'id')
+  if (id === user.id) adminMessage('You cannot change your own access here.')
+
+  // Enforce this in the update itself, not only in the Admin page buttons.
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(changes)
+    .eq('id', id)
+    .eq('is_admin', false)
+    .select('id')
+
+  if (error) {
+    console.error('User access update failed:', error)
+    adminMessage('Could not change user access. Please try again.')
+  }
+  if (!data?.length) adminMessage('No user changed. The account may be an admin, unavailable, or already removed.')
+  revalidatePath('/admin')
+  adminMessage(message)
 }
 
 export async function approveUser(formData: FormData) {
-  const id = String(formData.get('id') || '')
-  const supabase = await requireAdmin()
-
-  await supabase
-    .from('profiles')
-    .update({ approved: true, blocked: false })
-    .eq('id', id)
-
-  revalidatePath('/admin')
+  await updateUserAccess(formData, { approved: true, blocked: false }, 'User approved.')
 }
 
 export async function revokeUser(formData: FormData) {
-  const id = String(formData.get('id') || '')
-  const supabase = await requireAdmin()
-
-  await supabase
-    .from('profiles')
-    .update({ approved: false })
-    .eq('id', id)
-
-  revalidatePath('/admin')
+  await updateUserAccess(formData, { approved: false }, 'User access removed.')
 }
 
 export async function blockUser(formData: FormData) {
-  const id = String(formData.get('id') || '')
-  const supabase = await requireAdmin()
-
-  if (!id) redirect('/admin')
-
-  const { data: target } = await supabase
-    .from('profiles')
-    .select('is_admin')
-    .eq('id', id)
-    .single()
-
-  if (target?.is_admin) {
-    redirect('/admin?message=' + encodeURIComponent('Admin accounts cannot be blocked here.'))
-  }
-
-  const { error } = await supabase
-    .from('profiles')
-    .update({ approved: false, blocked: true })
-    .eq('id', id)
-
-  if (error) {
-    redirect('/admin?message=' + encodeURIComponent(error.message))
-  }
-
-  revalidatePath('/admin')
-  redirect('/admin?message=' + encodeURIComponent('User access blocked.'))
+  await updateUserAccess(formData, { approved: false, blocked: true }, 'User access blocked.')
 }
 
 export async function unblockUser(formData: FormData) {
-  const id = String(formData.get('id') || '')
-  const supabase = await requireAdmin()
-
-  if (!id) redirect('/admin')
-
-  const { error } = await supabase
-    .from('profiles')
-    .update({ blocked: false, approved: false })
-    .eq('id', id)
-
-  if (error) {
-    redirect('/admin?message=' + encodeURIComponent(error.message))
-  }
-
-  revalidatePath('/admin')
-  redirect('/admin?message=' + encodeURIComponent('User unblocked and moved to Pending.'))
+  await updateUserAccess(formData, { approved: false, blocked: false }, 'User unblocked and moved to Pending.')
 }
 
 function routeNameFromFilename(filename: string) {
@@ -114,18 +104,18 @@ function routeNameFromFilename(filename: string) {
 
 function parseGpxPoints(xml: string) {
   const tags =
-    xml.match(/<(?:[A-Za-z0-9_-]+:)?(?:trkpt|rtept)\b[^>]*>/gi) || []
+    xml.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '').match(/<(?:[A-Za-z0-9_-]+:)?(?:trkpt|rtept)\b[^>]*>/gi) || []
 
   const points: Array<{ lat: number; lng: number }> = []
 
   for (const tag of tags) {
-    const latMatch = tag.match(/\blat\s*=\s*["']([^"']+)["']/i)
-    const lonMatch = tag.match(/\blon\s*=\s*["']([^"']+)["']/i)
+    const latMatch = tag.match(/\slat\s*=\s*["']([^"']+)["']/i)
+    const lonMatch = tag.match(/\slon\s*=\s*["']([^"']+)["']/i)
 
     if (!latMatch || !lonMatch) continue
 
-    const lat = Number(latMatch[1])
-    const lng = Number(lonMatch[1])
+    const lat = coordinate(latMatch[1])
+    const lng = coordinate(lonMatch[1])
 
     if (
       Number.isFinite(lat) &&
@@ -146,8 +136,12 @@ export async function uploadRoute(formData: FormData) {
   const { supabase, user } = await requireAdminWithUser()
 
   const file = formData.get('gpxFile')
-  const requestedName = String(formData.get('routeName') || '').trim()
-  const sortOrder = Number(formData.get('sortOrder') || 100)
+  const requestedName = textField(formData, 'routeName')
+  const orderText = textField(formData, 'sortOrder')
+  const sortOrder = orderText === '' ? 100 : Number(orderText)
+  if (!Number.isInteger(sortOrder) || sortOrder < -2147483648 || sortOrder > 2147483647) {
+    adminMessage('Order number must be a whole number between -2147483648 and 2147483647.')
+  }
 
   if (!(file instanceof File)) {
     redirect('/admin?message=' + encodeURIComponent('Choose a GPX file.'))
@@ -157,12 +151,14 @@ export async function uploadRoute(formData: FormData) {
     redirect('/admin?message=' + encodeURIComponent('Only .gpx files are allowed.'))
   }
 
+  if (file.size === 0) adminMessage('The GPX file is empty.')
+
   if (file.size > 2 * 1024 * 1024) {
     redirect('/admin?message=' + encodeURIComponent('GPX file must be under 2 MB.'))
   }
 
-  const routeName =
-    (requestedName || routeNameFromFilename(file.name)).slice(0, 120)
+  const routeName = requestedName || routeNameFromFilename(file.name)
+  if (routeName.length > 120) adminMessage('Route name must be 120 characters or fewer.')
 
   if (!routeName) {
     redirect('/admin?message=' + encodeURIComponent('Enter a route name.'))
@@ -184,7 +180,7 @@ export async function uploadRoute(formData: FormData) {
       {
         name: routeName,
         points,
-        sort_order: Number.isFinite(sortOrder) ? sortOrder : 100,
+        sort_order: sortOrder,
         uploaded_by: user.id,
         updated_at: new Date().toISOString(),
       },
@@ -195,14 +191,14 @@ export async function uploadRoute(formData: FormData) {
 
   if (error) {
     console.error(error)
-    redirect('/admin?message=' + encodeURIComponent(error.message))
+    adminMessage('The database could not save this change. Please try again.')
   }
 
   revalidatePath('/admin')
   redirect(
     '/admin?message=' +
       encodeURIComponent(
-        `Route "${routeName}" uploaded. It will appear on the map immediately.`
+        `Route "${routeName}" uploaded. It will appear when the map next refreshes its route list.`
       )
   )
 }
@@ -210,21 +206,24 @@ export async function uploadRoute(formData: FormData) {
 export async function deleteRoute(formData: FormData) {
   const { supabase } = await requireAdminWithUser()
 
-  const id = String(formData.get('routeId') || '')
+  const id = requiredId(formData, 'routeId')
 
   if (!id) {
     redirect('/admin')
   }
 
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from('routes')
     .delete()
     .eq('id', id)
+    .select('id')
 
   if (error) {
     console.error(error)
-    redirect('/admin?message=' + encodeURIComponent(error.message))
+    adminMessage('The database could not save this change. Please try again.')
   }
+
+  if (!deleted?.length) adminMessage('Nothing was deleted. The record may be unavailable or already removed.')
 
   revalidatePath('/admin')
   redirect('/admin?message=' + encodeURIComponent('Route deleted.'))
@@ -234,31 +233,39 @@ export async function deleteRoute(formData: FormData) {
 export async function addHydrant(formData: FormData) {
   const { supabase, user } = await requireAdminWithUser()
 
-  const rawPoints = String(formData.get('hydrantPoints') || '').trim()
-  const address = String(formData.get('address') || '').trim().slice(0, 160)
-  const note = String(formData.get('note') || '').trim().slice(0, 300)
+  const rawPoints = textField(formData, 'hydrantPoints')
+  const address = textField(formData, 'address')
+  const note = textField(formData, 'note')
 
-  let submittedPoints: Array<{ latitude: number; longitude: number }> = []
-
-  if (rawPoints) {
-    try {
-      const parsed = JSON.parse(rawPoints)
-      if (Array.isArray(parsed)) {
-        submittedPoints = parsed.slice(0, 200).map((point) => ({
-          latitude: Number(point?.latitude),
-          longitude: Number(point?.longitude),
-        }))
-      }
-    } catch {
-      submittedPoints = []
-    }
+  if (address.length > 160 || note.length > 300) {
+    adminMessage('Address must be 160 characters or fewer and note 300 characters or fewer.')
   }
+  if (rawPoints.length > 100000) adminMessage('Too many hydrant locations. Select up to 200 at a time.')
 
-  // Backward-compatible single-point fallback.
-  if (submittedPoints.length === 0) {
+  let submittedPoints: Array<{ latitude: number; longitude: number }>
+  if (rawPoints) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(rawPoints)
+    } catch {
+      adminMessage('Invalid hydrant selection. Please select the locations again.')
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 200) {
+      adminMessage('Select between 1 and 200 hydrant locations.')
+    }
+    submittedPoints = parsed.map((point: unknown) => {
+      const record = point !== null && typeof point === 'object'
+        ? point as Record<string, unknown> : {}
+      return {
+        latitude: coordinate(record.latitude),
+        longitude: coordinate(record.longitude),
+      }
+    })
+  } else {
+    // Support older single-point forms only when no batch was supplied.
     submittedPoints = [{
-      latitude: Number(formData.get('latitude')),
-      longitude: Number(formData.get('longitude')),
+      latitude: coordinate(textField(formData, 'latitude')),
+      longitude: coordinate(textField(formData, 'longitude')),
     }]
   }
 
@@ -298,7 +305,7 @@ export async function addHydrant(formData: FormData) {
 
   if (error) {
     console.error(error)
-    redirect('/admin?message=' + encodeURIComponent(error.message))
+    adminMessage('The database could not save this change. Please try again.')
   }
 
   revalidatePath('/admin')
@@ -309,19 +316,22 @@ export async function addHydrant(formData: FormData) {
 
 export async function deleteHydrant(formData: FormData) {
   const { supabase } = await requireAdminWithUser()
-  const id = String(formData.get('hydrantId') || '')
+  const id = requiredId(formData, 'hydrantId')
 
   if (!id) redirect('/admin')
 
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from('manual_hydrants')
     .delete()
     .eq('id', id)
+    .select('id')
 
   if (error) {
     console.error(error)
-    redirect('/admin?message=' + encodeURIComponent(error.message))
+    adminMessage('The database could not save this change. Please try again.')
   }
+
+  if (!deleted?.length) adminMessage('Nothing was deleted. The record may be unavailable or already removed.')
 
   revalidatePath('/admin')
   redirect('/admin?message=' + encodeURIComponent('Manual fire hydrant deleted.'))
