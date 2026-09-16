@@ -2401,9 +2401,14 @@ function setMultiLine(
   };
 
   if (map.getSource(id)) {
-    map.getSource(id).setData(data);
-    return;
+  map.getSource(id).setData(data);
+
+  if (id === "liveDriveTrace" && map.getLayer(id)) {
+    map.moveLayer(id);
   }
+
+  return;
+}
 
   map.addSource(id, {
     type: "geojson",
@@ -2544,7 +2549,11 @@ function showSelectedRoutes(routes, fit = true) {
       null
     );
   });
-
+  
+if (map.getLayer("liveDriveTrace")) {
+  map.moveLayer("liveDriveTrace");
+}
+  
   if (!selectedRoutes.length) {
     if (!followMode) status("Routes hidden.");
     return;
